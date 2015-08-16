@@ -5,9 +5,9 @@
 # TECHNOLOGY STACK:
 # ------------------
 # Linux (Ubuntu 14.04)
-# Apache2
+# Nginx
 # MySQL
-# PHP5
+# PHP-FPM
 #
 # PHPMyAdmin
 # NodeJS ( + bower)
@@ -41,12 +41,12 @@ SCRIPT
 
 # Check script
 $check = <<SCRIPT
-    git --version
-    php -v
-    composer --version
-    echo node $(node -v)
-    echo npm $(npm -v)
-    echo bower $(bower -v)
+	git --version
+	php -v
+	composer --version
+	echo node $(node -v)
+	echo npm $(npm -v)
+	echo bower $(bower -v)
 SCRIPT
 
 # General project settings for customize
@@ -55,7 +55,7 @@ project_name = PROJECT_NAME || File.basename(File.dirname(__FILE__))
 project_host = PROJECT_HOST || "#{project_name}.dev"
 project_host_alias = PROJECT_HOST_ALIAS || "www.#{project_name}.dev"
 ip_address = IP_ADDRESS || "10.0.0.10"
-server_name = $SERVER_NAME || "localserver"
+server_name = SERVER_NAME || "localserver"
 hostmanager_aliases = ["#{project_host}", "#{project_host_alias}"]
 
 # Environment variables
@@ -66,152 +66,179 @@ CORES = VM_CORES || ENV['VM_CORES'] || 1
 
 # Virtual host setup
 $virtual_host = <<SCRIPT
-    echo "Setup virtual host..."
-    echo "<VirtualHost *:80>
-    ServerName #{project_host}
-    ServerAlias #{project_host_alias}
-    DocumentRoot /var/www/#{project_name}/public
-    <Directory /var/www/#{project_name}/public>
-        Options Indexes FollowSymLinks Includes ExecCGI
-        AllowOverride All
-        Require all granted
-    </Directory>
-    # Available loglevels: trace8, ..., trace1, debug, info, notice, warn, error, crit, alert, emerg.
-    LogLevel info
-    ErrorLog /var/www/#{project_name}/log/apache-error.log
-    CustomLog /var/www/#{project_name}/log/apache-access.log combined
-    </VirtualHost>" > /etc/apache2/sites-available/#{project_name}.conf
-    a2ensite #{project_name} > /dev/null
-    # Restart Services
-    service apache2 restart > /dev/null
+	echo "Setup virtual hosts..."
+	echo 'server {
+		listen   80;
+		server_name #{project_host} #{project_host_alias};
+
+		root /var/www/#{project_name}/public;
+		index index.php index.html index.htm;
+
+	    access_log  /var/www/#{project_name}/log/nginx-access.log;
+	    error_log   /var/www/#{project_name}/log/nginx-error.log;
+
+		location / {
+			try_files $uri $uri/ /index.php?q=$uri&$args;
+		}
+		location ~* ^.+.(js|css|png|jpg|jpeg|gif|ico)$ {
+			access_log        off;
+			expires           max;
+		}
+		location ~ \.php$ {
+			try_files $uri =404;
+		    fastcgi_split_path_info ^(.+\.php)(/.+)$;
+		    fastcgi_pass unix:/var/run/php5-fpm.sock;
+		    fastcgi_index index.php;
+		    include fastcgi_params;
+		}
+
+		location = /favicon.ico {
+			log_not_found off;
+			access_log off;
+		}
+		location = /robots.txt {
+			allow all;
+			log_not_found off;
+			access_log off;
+		}
+		## Disable viewing .htaccess & .htpassword
+		location ~ /\.ht {
+			deny  all;
+		}
+
+		# phpMyAdmin
+		location /phpmyadmin {
+			root /usr/share/;
+			index index.php index.html index.htm;
+			location ~ ^/phpmyadmin/(.+\.php)$ {
+				client_max_body_size 4M;
+				client_body_buffer_size 128k;
+				try_files $uri =404;
+				root /usr/share/;
+				# Point it to the fpm socket;
+				fastcgi_pass unix:/var/run/php5-fpm.sock;
+				fastcgi_index index.php;
+				fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+				include /etc/nginx/fastcgi_params;
+			}
+			location ~* ^/phpmyadmin/(.+\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt)) {
+				root /usr/share/;
+			}
+		}
+		location /phpMyAdmin {
+			rewrite ^/* /phpmyadmin last;
+		}
+	}' > /etc/nginx/sites-available/#{project_name}
+	ln -s /etc/nginx/sites-available/#{project_name} /etc/nginx/sites-enabled/#{project_name} > /dev/null
+	service nginx restart > /dev/null
 SCRIPT
 
 # Setup script
 $script = <<SCRIPT
-    # Update the server
-    echo "Update server..."
-    apt-get update -qq && apt-get upgrade -qq -y --fix-missing > /dev/null
-    # Install basic tools
-    apt-get install -qq -y build-essential binutils-doc git > /dev/null
+	# Update the server
+	echo "Update server..."
+	apt-get update -qq && apt-get upgrade -qq -y --fix-missing > /dev/null
+	# Install basic tools
+	echo "Install basic tools..."
+	apt-get install -qq -y build-essential binutils-doc git > /dev/null
 
-    # Install Apache
-    echo "Install Apache2..."
-    apt-get install -qq -y apache2 > /dev/null
-    # Configure Apache
-    echo "Configure Apache2..."
-    echo "ServerName #{server_name}" | sudo tee /etc/apache2/conf-available/myconf.conf
-    sudo ln -s /etc/apache2/conf-available/myconf.conf /etc/apache2/conf-enabled/myconf.conf > /dev/null
-    a2enmod rewrite > /dev/null
+	# Install Nginx
+	echo "Install Nginx..."
+	apt-get install -qq -y nginx > /dev/null
 
-    # Setup project dir
-    mkdir -p /var/www/#{project_name}/log
-    chown www-data:www-data -R /var/www/#{project_name}
+	# Install PHP-FPM
+	echo "Install PHP-FPM and tools..."
+	apt-get install -qq -y php5-fpm php5-cgi php5-cli php5-common php5-gd php5-mysql php5-curl php5-intl php5-mcrypt php5-tidy php5-readline php5-xdebug php-apc php5-memcached php5-imap php5-sqlite php5-xsl php-pear > /dev/null
 
-    # Install PHP
-    echo "Install PHP..."
-    apt-get install -qq -y php5 php5-cli php5-common php5-gd php5-mysql php5-curl php5-intl php5-mcrypt php5-tidy php5-readline php5-xdebug php-apc php5-memcached php5-imap php5-sqlite php5-xsl php-pear > /dev/null
-    # Configure PHP
-    echo "Configure PHP..."
-    php5enmod mcrypt > /dev/null
-    # Display errors On
-    sed -i "s/display_startup_errors = Off/display_startup_errors = On/g" /etc/php5/apache2/php.ini /etc/php5/cli/php.ini
-    sed -i "s/display_errors = Off/display_errors = On/g" /etc/php5/apache2/php.ini /etc/php5/cli/php.ini
-    # Configure xdebug
-    echo "xdebug.remote_enable=on
-    xdebug.remote_connect_back=on
-    xdebug.remote_autostart=on
-    xdebug.remote_handler=dbgp
-    xdebug.remote_host=localhost
-    xdebug.remote_port=9001
-    xdebug.remote_mode=req
-    xdebug.idekey=PHPSTORM" > /etc/php5/apache2/conf.d/21-xdebug.ini > /etc/php5/cli/conf.d/21-xdebug.ini
-    # Set timezone
-    echo date.timezone = Etc/GMT > /etc/php5/apache2/conf.d/20-date.ini > /etc/php5/cli/conf.d/20-date.ini
 
-    # Install MySQL
-    echo "Install MySQL..."
-    echo mysql-server     mysql-server/root_password        password local | debconf-set-selections
-    echo mysql-server     mysql-server/root_password_again  password local | debconf-set-selections
-    apt-get -yq install mysql-client mysql-server > /dev/null
-    # Allow MySQL root access from any host
-    sed -i 's/^bind-address[[:blank:]]*=[[:blank:]]*127.0.0.1$/bind-address = 0.0.0.0/g' /etc/mysql/my.cnf
-    echo "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY 'local' WITH GRANT OPTION" | mysql -u root --password=local
-    echo "GRANT PROXY ON ''@'' TO 'root'@'%' WITH GRANT OPTION" | mysql -u root --password=local
+	# Setup project dir
+	mkdir -p /var/www/#{project_name}/log
+	chown www-data:www-data -R /var/www/#{project_name}
 
-    # Install phpmyadmin
-    echo "Install PHPMyAdmin..."
-    echo phpmyadmin       phpmyadmin/reconfigure-webserver  text     apache2     | debconf-set-selections
-    echo phpmyadmin       phpmyadmin/dbconfig-install       boolean  true        | debconf-set-selections
-    echo phpmyadmin       phpmyadmin/app-password-confirm   password local       | debconf-set-selections
-    echo phpmyadmin       phpmyadmin/mysql/admin-pass       password local       | debconf-set-selections
-    echo phpmyadmin       phpmyadmin/password-confirm       password local       | debconf-set-selections
-    echo phpmyadmin       phpmyadmin/setup-password         password local       | debconf-set-selections
-    echo phpmyadmin       phpmyadmin/mysql/app-pass         password local       | debconf-set-selections
-    apt-get -yq install phpmyadmin > /dev/null
-    # Restart Services
-    service mysql restart > /dev/null
+	# Install MySQL
+	echo "Install MySQL server..."
+	echo mysql-server     mysql-server/root_password        password local | debconf-set-selections
+	echo mysql-server     mysql-server/root_password_again  password local | debconf-set-selections
+	apt-get -yq install mysql-client mysql-server > /dev/null
+	# Allow MySQL root access from any host
+	sed -i 's/^bind-address[[:blank:]]*=[[:blank:]]*127.0.0.1$/bind-address = 0.0.0.0/g' /etc/mysql/my.cnf
+	echo "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY 'local' WITH GRANT OPTION" | mysql -u root --password=local
+	echo "GRANT PROXY ON ''@'' TO 'root'@'%' WITH GRANT OPTION" | mysql -u root --password=local
 
-    # Install NodeJS
-    echo "Install NodeJS"
-    curl -sL https://deb.nodesource.com/setup | bash - > /dev/null
-    apt-get install -yq nodejs > /dev/null
-    # Install Bower
-    echo "Install Bower"
-    npm install -gq bower > /dev/null
-    # Install composer
-    echo "Install Composer"
-    curl -sS https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer > /dev/null
-    sudo -u vagrant -H composer --no-ansi -q global require "fxp/composer-asset-plugin:1.0.0-beta3"   # Install NPM/Bower Dependency Manager for Composer
-    sudo -u vagrant -H composer --no-ansi -q global require fabpot/php-cs-fixer @stable               # Install PHP Coding Standards Fixer
-    sudo -u vagrant -H echo export PATH=$PATH:/home/vagrant/.composer/vendor/bin >> .bashrc
+	# Install phpmyadmin
+	echo "Install PHPMyAdmin..."
+	echo phpmyadmin       phpmyadmin/reconfigure-webserver  text     apache2     | debconf-set-selections
+	echo phpmyadmin       phpmyadmin/dbconfig-install       boolean  true        | debconf-set-selections
+	echo phpmyadmin       phpmyadmin/app-password-confirm   password local       | debconf-set-selections
+	echo phpmyadmin       phpmyadmin/mysql/admin-pass       password local       | debconf-set-selections
+	echo phpmyadmin       phpmyadmin/password-confirm       password local       | debconf-set-selections
+	echo phpmyadmin       phpmyadmin/setup-password         password local       | debconf-set-selections
+	echo phpmyadmin       phpmyadmin/mysql/app-pass         password local       | debconf-set-selections
+	apt-get -yq install phpmyadmin > /dev/null
+	# Restart Services
+	service mysql restart > /dev/null
 
-    # Configure VM user
-    adduser vagrant www-data
+	# Install NodeJS
+	echo "Install NodeJS..."
+	curl -sL https://deb.nodesource.com/setup | bash - > /dev/null
+	apt-get install -yq nodejs > /dev/null
+	# Install Bower
+	echo "Install Bower..."
+	npm install -gq bower > /dev/null
+	# Install composer
+	echo "Install Composer..."
+	curl -sS https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer > /dev/null
+	sudo -u vagrant -H composer --no-ansi -q global require "fxp/composer-asset-plugin:1.0.0-beta3"   # Install NPM/Bower Dependency Manager for Composer
+	sudo -u vagrant -H composer --no-ansi -q global require fabpot/php-cs-fixer @stable               # Install PHP Coding Standards Fixer
+	sudo -u vagrant -H echo export PATH=$PATH:/home/vagrant/.composer/vendor/bin >> .bashrc
+
+	# Configure VM user
+	adduser vagrant www-data
 SCRIPT
 
 # VAGRANT CONFIGURATION
 # -----------------------
 Vagrant.configure("2") do |config|
 
-  # Define VM box to use
-  config.vm.box = "ubuntu/trusty#{ARCH}"
-  config.vm.box_version = ">= 14.04"
+	# Define VM box to use
+	config.vm.box = "ubuntu/trusty#{ARCH}"
+	config.vm.box_version = ">= 14.04"
 
-  # Set share folder
-  config.vm.synced_folder "./" , "/var/www/#{project_name}", :mount_options => ["dmode=777", "fmode=666"]
+	# Set share folder
+	config.vm.synced_folder "./" , "/var/www/#{project_name}", :mount_options => ["dmode=777", "fmode=666"]
 
-  # Provider-specific configuration so you can fine-tune VirtualBox for Vagrant.
-  # These expose provider-specific options.
-  config.vm.provider :virtualbox do |vm|
-    # Use VBoxManage to customize the VM. For example to change memory:
-    vm.customize ["modifyvm", :id, "--memory", MEMORY.to_i]
-    vm.customize ["modifyvm", :id, "--cpus", CORES.to_i]
+	# Provider-specific configuration so you can fine-tune VirtualBox for Vagrant.
+	# These expose provider-specific options.
+	config.vm.provider :virtualbox do |vm|
+		# Use VBoxManage to customize the VM. For example to change memory:
+		vm.customize ["modifyvm", :id, "--memory", MEMORY.to_i]
+		vm.customize ["modifyvm", :id, "--cpus", CORES.to_i]
 
-    if CORES.to_i > 1
-      vm.customize ["modifyvm", :id, "--ioapic", "on"]
-    end
-  end
+		if CORES.to_i > 1
+			vm.customize ["modifyvm", :id, "--ioapic", "on"]
+		end
+	end
 
-  # Use hostonly network with a static IP Address and enable
-  # hostmanager so we can have a custom domain for the server
-  # by modifying the host machines hosts file
-  config.hostmanager.enabled = true
-  config.hostmanager.manage_host = true
-  config.vm.define project_name do |node|
-    node.vm.hostname = server_name
-    node.vm.network :private_network, ip: ip_address
-    node.hostmanager.aliases = hostmanager_aliases
-  end
-  config.vm.provision :hostmanager
+	# Use hostonly network with a static IP Address and enable
+	# hostmanager so we can have a custom domain for the server
+	# by modifying the host machines hosts file
+	config.hostmanager.enabled = true
+	config.hostmanager.manage_host = true
+	config.vm.define project_name do |node|
+		node.vm.hostname = server_name
+		node.vm.network :private_network, ip: ip_address
+		node.hostmanager.aliases = hostmanager_aliases
+	end
+	config.vm.provision :hostmanager
 
-  config.ssh.shell = "bash -c 'BASH_ENV=/etc/profile exec bash'"
+	config.ssh.shell = "bash -c 'BASH_ENV=/etc/profile exec bash'"
 
-  if Dir.glob("#{File.dirname(__FILE__)}/.vagrant/machines/#{project_name}/*/id").empty?
-    config.vm.provision :shell, :inline => $script
-  end
+	if Dir.glob("#{File.dirname(__FILE__)}/.vagrant/machines/#{project_name}/*/id").empty?
+		config.vm.provision :shell, :inline => $script
+	end
 
-  config.vm.provision :shell, :inline => $virtual_host
-  config.vm.provision :shell, :inline => $server_script
-  config.vm.provision :shell, :inline => $check
+	config.vm.provision :shell, :inline => $virtual_host
+	config.vm.provision :shell, :inline => $server_script
+	config.vm.provision :shell, :inline => $check
 
 end
